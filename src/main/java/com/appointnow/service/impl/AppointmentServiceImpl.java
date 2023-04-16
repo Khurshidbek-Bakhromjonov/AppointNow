@@ -322,11 +322,15 @@ public class AppointmentServiceImpl implements AppointmentService {
 
     @Override
     public int getNumberOfScheduledAppointmentsForUser(int userId) {
-        return 0;
+        return appointmentRepository.findScheduledByUserId(userId).size();
     }
 
     @Override
     public boolean isAvailable(int workId, int providerId, int customerId, LocalDateTime start) {
-        return false;
+        if (!workService.isWorkForCustomer(workId, customerId))
+            return false;
+        Work work = workService.getWorkById(workId);
+        TimePeriod timePeriod = new TimePeriod(start.toLocalTime(), start.toLocalTime().plusMinutes(work.getDuration()));
+        return getAvailableHours(providerId, customerId, workId, start.toLocalDate()).contains(timePeriod);
     }
 }
