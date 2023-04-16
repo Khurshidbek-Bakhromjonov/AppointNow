@@ -25,7 +25,7 @@ public interface AppointmentService {
     List<Appointment> getAppointmentsByProviderAtDay(int providerId, LocalDate day);
     List<Appointment> getAppointmentsByCustomerAtDay(int customerId, LocalDate day);
     List<Appointment> getConfirmedAppointmentsByCustomerId(int customerId);
-    List<Appointment> getCanceledAppointmentsByCustomerIdForCurrentMonth(int userId);
+    List<Appointment> getCanceledAppointmentsByCustomerIdForCurrentMonth(int customerId);
     List<TimePeriod> getAvailableHours(int providerId, int customerId, int workId, LocalDate date);
     List<TimePeriod> calculateAvailableHours(List<TimePeriod> availableTimePeriods, Work work);
     List<TimePeriod> excludeAppointmentsFromTimePeriods(List<TimePeriod> periods, List<Appointment> appointments);
@@ -35,7 +35,7 @@ public interface AppointmentService {
     boolean requestAppointmentRejection(int appointmentId, int customerId);
     boolean requestAppointmentRejection(String token);
     boolean isProviderAllowedToAcceptRejection(int providerId, int appointmentId);
-    boolean acceptRejection(int appointmentId, int providerId);
+    boolean acceptRejection(int appointmentId, int customerId);
     boolean acceptRejection(String token);
     void addMessageToAppointmentChat(int appointmentId, int authorId, ChatMessage chatMessage);
     int getNumberOfCanceledAppointmentsForUser(int userId);

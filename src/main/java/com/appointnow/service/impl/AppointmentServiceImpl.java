@@ -1,162 +1,323 @@
 package com.appointnow.service.impl;
 
 import com.appointnow.dao.AppointmentRepository;
-import com.appointnow.entity.Appointment;
-import com.appointnow.entity.ChatMessage;
-import com.appointnow.entity.Work;
+import com.appointnow.dao.ChatMessageRepository;
+import com.appointnow.entity.*;
+import com.appointnow.entity.user.User;
+import com.appointnow.entity.user.provider.Provider;
+import com.appointnow.exception.AppointmentNotFoundException;
+import com.appointnow.model.DayPlan;
 import com.appointnow.model.TimePeriod;
 import com.appointnow.service.AppointmentService;
+import com.appointnow.service.NotificationService;
+import com.appointnow.service.UserService;
+import com.appointnow.service.WorkService;
 import lombok.RequiredArgsConstructor;
+import org.springframework.security.access.prepost.PostAuthorize;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.temporal.TemporalAdjusters;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 @Service
 @RequiredArgsConstructor
 public class AppointmentServiceImpl implements AppointmentService {
 
+    private final int NUMBER_OF_ALLOWED_CANCELLATIONS_PER_MONTH = 1;
     private final AppointmentRepository appointmentRepository;
+    private final UserService userService;
+    private final WorkService workService;
+    private final ChatMessageRepository chatMessageRepository;
+    private final NotificationService notificationService;
+    private final JwtTokenServiceImpl jwtTokenService;
 
     @Override
     public void createNewAppointment(int workId, int providerId, int customerId, LocalDateTime start) {
-
+        if (isAvailable(workId, providerId, customerId, start)) {
+            Appointment appointment = new Appointment();
+            appointment.setStatus(AppointmentStatus.SCHEDULED);
+            appointment.setCustomer(userService.getCustomerById(customerId));
+            appointment.setProvider(userService.getProviderById(providerId));
+            Work work = workService.getWorkById(workId);
+            appointment.setWork(work);
+            appointment.setStart(start);
+            appointment.setEnd(start.plusMinutes(work.getDuration()));
+            appointmentRepository.save(appointment);
+            notificationService.newNewAppointmentScheduledNotification(appointment, true);
+        }
     }
 
     @Override
     public void updateAppointment(Appointment appointment) {
-
+        appointmentRepository.save(appointment);
     }
 
     @Override
     public void updateUserAppointmentsStatuses(int userId) {
-
+        for (Appointment appointment : appointmentRepository.findScheduledByUserIdWithEndBeforeDate(LocalDateTime.now(), userId)) {
+            appointment.setStatus(AppointmentStatus.FINISHED);
+            updateAppointment(appointment);
+        }
     }
 
     @Override
     public void updateAllAppointmentsStatuses() {
+        appointmentRepository.findScheduledWithEndBeforeDate(LocalDateTime.now())
+                .forEach(appointment -> {
+                    appointment.setStatus(AppointmentStatus.FINISHED);
+                    updateAppointment(appointment);
+                    if (LocalDateTime.now().minusDays(1).isBefore(appointment.getEnd()))
+                        notificationService.newAppointmentFinishedNotification(appointment, true);
+                });
 
+        appointmentRepository.findFinishedWithEndBeforeDate(LocalDateTime.now().minusDays(1))
+                .forEach(appointment -> {
+                    appointment.setStatus(AppointmentStatus.CONFIRMED);
+                    updateAppointment(appointment);
+                });
     }
 
     @Override
     public void updateAppointmentsStatusesWithExpiredExchangeRequest() {
-
+        appointmentRepository.findExchangeRequestedWithStartBefore(LocalDateTime.now().plusDays(1))
+                .forEach(appointment -> {
+                    appointment.setStatus(AppointmentStatus.SCHEDULED);
+                    updateAppointment(appointment);
+                });
     }
 
     @Override
     public void deleteAppointmentById(int appointmentId) {
-
+        appointmentRepository.deleteById(appointmentId);
     }
 
     @Override
+    @PostAuthorize("returnObject.provider.id == principal.id or returnObject.customer.id == principal.id or hasRole('ADMIN')")
     public Appointment getAppointmentWithAuthorization(int id) {
-        return null;
+        return getAppointmentById(id);
     }
 
     @Override
     public Appointment getAppointmentById(int id) {
-        return null;
+        return appointmentRepository.findById(id)
+                .orElseThrow(AppointmentNotFoundException::new);
     }
 
     @Override
+    @PreAuthorize("hasRole('ADMIN')")
     public List<Appointment> getAllAppointments() {
-        return null;
+        return appointmentRepository.findAll();
     }
 
     @Override
+    @PreAuthorize("#customerId == principal.id")
     public List<Appointment> getAppointmentByCustomerId(int customerId) {
-        return null;
+        return appointmentRepository.findByCustomerId(customerId);
     }
 
     @Override
+    @PreAuthorize("#providerId == principal.id")
     public List<Appointment> getAppointmentByProviderId(int providerId) {
-        return null;
+        return appointmentRepository.findByProviderId(providerId);
     }
 
     @Override
     public List<Appointment> getAppointmentsByProviderAtDay(int providerId, LocalDate day) {
-        return null;
+        return appointmentRepository.findByProviderIdWithStartInPeriod(providerId, day.atStartOfDay(), day.atStartOfDay().plusDays(1));
     }
 
     @Override
     public List<Appointment> getAppointmentsByCustomerAtDay(int customerId, LocalDate day) {
-        return null;
+        return appointmentRepository.findByCustomerIdWithStartInPeriod(customerId, day.atStartOfDay(), day.atStartOfDay().plusDays(1));
     }
 
     @Override
     public List<Appointment> getConfirmedAppointmentsByCustomerId(int customerId) {
-        return null;
+        return appointmentRepository.findConfirmedByCustomerId(customerId);
     }
 
     @Override
-    public List<Appointment> getCanceledAppointmentsByCustomerIdForCurrentMonth(int userId) {
-        return null;
+    public List<Appointment> getCanceledAppointmentsByCustomerIdForCurrentMonth(int customerId) {
+        return appointmentRepository.findByCustomerIdCanceledAfterDate(customerId, LocalDate.now().with(TemporalAdjusters.firstDayOfMonth()).atStartOfDay());
     }
 
     @Override
     public List<TimePeriod> getAvailableHours(int providerId, int customerId, int workId, LocalDate date) {
-        return null;
+        Provider provider = userService.getProviderById(providerId);
+        WorkingPlan workingPlan = provider.getWorkingPlan();
+        DayPlan selectedDay = workingPlan.getDay(date.getDayOfWeek().toString().toLowerCase());
+
+        List<Appointment> providerAppointments = getAppointmentsByProviderAtDay(providerId, date);
+        List<Appointment> customerAppointments = getAppointmentsByCustomerAtDay(customerId, date);
+
+        List<TimePeriod> availablePeriods = selectedDay.getTimePeriodsWithBreaksExcluded();
+        availablePeriods = excludeAppointmentsFromTimePeriods(availablePeriods, providerAppointments);
+
+        availablePeriods = excludeAppointmentsFromTimePeriods(availablePeriods, customerAppointments);
+        return calculateAvailableHours(availablePeriods, workService.getWorkById(workId));
     }
 
     @Override
     public List<TimePeriod> calculateAvailableHours(List<TimePeriod> availableTimePeriods, Work work) {
-        return null;
+        ArrayList<TimePeriod> availableHours = new ArrayList<>();
+        for (TimePeriod period : availableTimePeriods) {
+            TimePeriod workPeriod = new TimePeriod(period.getStart(), period.getStart().plusMinutes(work.getDuration()));
+            while (workPeriod.getEnd().isBefore(period.getEnd()) || workPeriod.getEnd().equals(period.getEnd())) {
+                availableHours.add(new TimePeriod(workPeriod.getStart(), workPeriod.getStart().plusMinutes(work.getDuration())));
+                workPeriod.setStart(workPeriod.getStart().plusMinutes(work.getDuration()));
+                workPeriod.setEnd(workPeriod.getEnd().plusMinutes(work.getDuration()));
+            }
+        }
+        return availableHours;
     }
 
     @Override
     public List<TimePeriod> excludeAppointmentsFromTimePeriods(List<TimePeriod> periods, List<Appointment> appointments) {
-        return null;
+        List<TimePeriod> toAdd = new ArrayList<>();
+        Collections.sort(appointments);
+        for (Appointment appointment : appointments) {
+            for (TimePeriod period : periods) {
+                if ((appointment.getStart().toLocalTime().isBefore(period.getStart()) || appointment.getStart().toLocalTime().equals(period.getStart())) && appointment.getEnd().toLocalTime().isAfter(period.getStart()) && appointment.getEnd().toLocalTime().isBefore(period.getEnd()))
+                    period.setStart(appointment.getEnd().toLocalTime());
+                if (appointment.getStart().toLocalTime().isAfter(period.getStart()) && appointment.getStart().toLocalTime().isBefore(period.getEnd()) && appointment.getEnd().toLocalTime().isAfter(period.getEnd()) || appointment.getEnd().toLocalTime().equals(period.getEnd()))
+                    period.setEnd(appointment.getStart().toLocalTime());
+                if (appointment.getStart().toLocalTime().isAfter(period.getStart()) && appointment.getEnd().toLocalTime().isBefore(period.getEnd())) {
+                    toAdd.add(new TimePeriod(period.getStart(), appointment.getStart().toLocalTime()));
+                    period.setStart(appointment.getEnd().toLocalTime());
+                }
+            }
+        }
+        periods.addAll(toAdd);
+        Collections.sort(periods);
+        return periods;
     }
 
     @Override
     public String getCancelNotAllowedReason(int userId, int appointmentId) {
+        User user = userService.getUserById(userId);
+        Appointment appointment = getAppointmentWithAuthorization(appointmentId);
+
+        if (user.hasRole("ROLE_ADMIN"))
+            return "Only customer or provider can cancel appointments";
+
+        if (appointment.getProvider().equals(user)) {
+            if (!appointment.getStatus().equals(AppointmentStatus.SCHEDULED))
+                return "Only appointments with scheduled status can be cancelled.";
+            else
+                return null;
+        }
+
+        if (appointment.getCustomer().equals(user)) {
+            if (!appointment.getStatus().equals(AppointmentStatus.SCHEDULED))
+                return "Only appointments with scheduled status can be cancelled.";
+            else if (LocalDateTime.now().plusDays(1).isAfter(appointment.getStart()))
+                return "Appointments which will be in less than 24 hours cannot be canceled.";
+            else if (!appointment.getWork().getEditable())
+                return "This type of appointment can be canceled only by Provider.";
+            else if (getCanceledAppointmentsByCustomerIdForCurrentMonth(userId).size() >= NUMBER_OF_ALLOWED_CANCELLATIONS_PER_MONTH)
+                return "You can't cancel this appointment because you exceeded maximum number of cancellations in this month.";
+            else
+                return null;
+        }
         return null;
     }
 
     @Override
     public void cancelUserAppointmentById(int appointmentId, int userId) {
-
+        Appointment appointment = appointmentRepository.getOne(appointmentId);
+        if (appointment.getCustomer().getId() == userId || appointment.getProvider().getId() == userId) {
+            appointment.setStatus(AppointmentStatus.CANCELED);
+            User canceler = userService.getUserById(userId);
+            appointment.setCanceler(canceler);
+            appointment.setCanceledAt(LocalDateTime.now());
+            appointmentRepository.save(appointment);
+            if (canceler.equals(appointment.getCustomer()))
+                notificationService.newAppointmentCanceledByCustomerNotification(appointment, true);
+            else if (canceler.equals(appointment.getProvider()))
+                notificationService.newAppointmentCanceledByProviderNotification(appointment, true);
+        } else
+            throw new org.springframework.security.access.AccessDeniedException("Unauthorized");
     }
 
     @Override
     public boolean isCustomerAllowedToRejectAppointment(int customerId, int appointmentId) {
-        return false;
+        User user = userService.getUserById(customerId);
+        Appointment appointment = getAppointmentWithAuthorization(appointmentId);
+        return appointment.getCustomer().equals(user) && appointment.getStatus().equals(AppointmentStatus.FINISHED) && !LocalDateTime.now().isAfter(appointment.getEnd().plusDays(1));
     }
 
     @Override
     public boolean requestAppointmentRejection(int appointmentId, int customerId) {
-        return false;
+        if (isCustomerAllowedToRejectAppointment(customerId, appointmentId)) {
+            Appointment appointment = getAppointmentWithAuthorization(appointmentId);
+            appointment.setStatus(AppointmentStatus.REJECTION_REQUESTED);
+            notificationService.newAppointmentRejectionRequestedNotification(appointment, true);
+            updateAppointment(appointment);
+            return true;
+        } else
+            return false;
     }
 
     @Override
     public boolean requestAppointmentRejection(String token) {
+        if (jwtTokenService.validateToken(token)) {
+            int appointmentId = jwtTokenService.getAppointmentIdFromToken(token);
+            int customerId = jwtTokenService.getCustomerIdFromToken(token);
+            return requestAppointmentRejection(appointmentId, customerId);
+        }
         return false;
     }
 
     @Override
     public boolean isProviderAllowedToAcceptRejection(int providerId, int appointmentId) {
-        return false;
+        User user = userService.getUserById(providerId);
+        Appointment appointment = getAppointmentWithAuthorization(appointmentId);
+        return appointment.getProvider().equals(user) && appointment.getStatus().equals(AppointmentStatus.REJECTION_REQUESTED);
     }
 
     @Override
-    public boolean acceptRejection(int appointmentId, int providerId) {
-        return false;
+    public boolean acceptRejection(int appointmentId, int customerId) {
+        if (isProviderAllowedToAcceptRejection(customerId, appointmentId)) {
+            Appointment appointment = getAppointmentWithAuthorization(appointmentId);
+            appointment.setStatus(AppointmentStatus.REJECTED);
+            updateAppointment(appointment);
+            notificationService.newAppointmentRejectionAcceptedNotification(appointment, true);
+            return true;
+        } else
+            return false;
     }
 
     @Override
     public boolean acceptRejection(String token) {
+        if (jwtTokenService.validateToken(token)) {
+            int appointmentId = jwtTokenService.getAppointmentIdFromToken(token);
+            int providerId = jwtTokenService.getProviderIdFromToken(token);
+            return acceptRejection(appointmentId, providerId);
+        }
         return false;
     }
 
     @Override
     public void addMessageToAppointmentChat(int appointmentId, int authorId, ChatMessage chatMessage) {
-
+        Appointment appointment = getAppointmentWithAuthorization(appointmentId);
+        if (appointment.getProvider().getId() == authorId || appointment.getCustomer().getId() == authorId) {
+            chatMessage.setAuthor(userService.getUserById(authorId));
+            chatMessage.setAppointment(appointment);
+            chatMessage.setCreatedAt(LocalDateTime.now());
+            chatMessageRepository.save(chatMessage);
+            notificationService.newChatMessageNotification(chatMessage, true);
+        } else
+            throw new org.springframework.security.access.AccessDeniedException("Unauthorized");
     }
 
     @Override
     public int getNumberOfCanceledAppointmentsForUser(int userId) {
-        return 0;
+        return appointmentRepository.findCanceledByUser(userId).size();
     }
 
     @Override
