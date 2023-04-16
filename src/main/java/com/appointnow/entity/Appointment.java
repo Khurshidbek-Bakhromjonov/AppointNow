@@ -1,6 +1,5 @@
 package com.appointnow.entity;
 
-import com.appointnow.ExchangeRequest;
 import com.appointnow.entity.user.User;
 import com.appointnow.entity.user.customer.Customer;
 import com.appointnow.entity.user.provider.Provider;
